@@ -223,14 +223,16 @@ class TestFTM300Freq(unittest.TestCase):
         self.assertEqual(57, len(ftm300d.TIMEZONE_LABELS))
 
 
-def _setting_map(settings):
-    found = {}
+def _iter_settings(settings):
     for element in settings:
         if isinstance(element, RadioSetting):
-            found[element.get_name()] = str(element.value)
+            yield element
         else:
-            found.update(_setting_map(element))
-    return found
+            yield from _iter_settings(element)
+
+
+def _setting_map(settings):
+    return {s.get_name(): str(s.value) for s in _iter_settings(settings)}
 
 
 class FakeFTM300:
@@ -440,14 +442,11 @@ class TestFTM300Clone(unittest.TestCase):
 
         settings = src.get_settings()
         src.set_settings(settings)
-        for group in settings:
-            if isinstance(group, RadioSetting):
-                continue
-            for setting in group:
-                if setting.get_name() == "unit":
-                    setting.value = "METRIC"
-                elif setting.get_name() == "timezone":
-                    setting.value = "UTC -8:00"
+        for setting in _iter_settings(settings):
+            if setting.get_name() == "unit":
+                setting.value = "METRIC"
+            elif setting.get_name() == "timezone":
+                setting.value = "UTC -8:00"
         src.set_settings(settings)
 
         packed = src.get_mmap().get_packed()
@@ -458,26 +457,67 @@ class TestFTM300Clone(unittest.TestCase):
         self.assertEqual("UTC -8:00", values["timezone"])
 
         settings = src.get_settings()
-        for group in settings:
-            if isinstance(group, RadioSetting):
-                continue
-            for setting in group:
-                if setting.get_name() == "lcd_brightness":
-                    setting.value = "MIN"
-                elif setting.get_name() == "callsign":
-                    setting.value = "N0CALL/A"
-                elif setting.get_name() == "aprs_call":
-                    setting.value = "N0CALL"
+        for setting in _iter_settings(settings):
+            name = setting.get_name()
+            if name == "lcd_brightness":
+                setting.value = "MIN"
+            elif name == "callsign":
+                setting.value = "N0CALL/A"
+            elif name == "aprs_call":
+                setting.value = "N0CALL"
+            elif name == "aprs_ssid":
+                setting.value = "13"
+            elif name == "aprs_modem":
+                setting.value = "ON"
+            elif name == "beep":
+                setting.value = "HIGH"
+            elif name == "ams_tx_mode":
+                setting.value = "TX DN Fixed"
+            elif name == "fm_bandwidth":
+                setting.value = "Narrow"
+            elif name == "date_fmt":
+                setting.value = "YYYY/MMM/DD"
+            elif name == "time_12hr":
+                setting.value = "12 hour"
+            elif name == "clock_type_b":
+                setting.value = "B"
         src.set_settings(settings)
         packed = src.get_mmap().get_packed()
+        self.assertEqual(0x88, packed[0xEB])
+        self.assertEqual(0x10, packed[0xFA])
+        self.assertEqual(0x02, packed[0xEE])
+        self.assertEqual(0x20, packed[0x91] & 0x20)
+        self.assertEqual(0x80, packed[0x9A])
+        self.assertEqual(0x10, packed[0xF9] & 0x10)
+        self.assertEqual(0x00, packed[0xF9] & 0x07)
         self.assertEqual(0x03, packed[0x28F])
         self.assertEqual(
             b"N0CALL/A" + b"\xff" * 2, packed[0x2C8:0x2D2])
         self.assertEqual(b"N0CALL", packed[0x508:0x50E])
+        self.assertEqual(0x0D, packed[0x50E])
+        self.assertEqual(0x01, packed[0x534])
         values = _setting_map(src.get_settings())
         self.assertEqual("MIN", values["lcd_brightness"])
         self.assertEqual("N0CALL/A", values["callsign"])
         self.assertEqual("N0CALL", values["aprs_call"])
+        self.assertEqual("13", values["aprs_ssid"])
+        self.assertEqual("ON", values["aprs_modem"])
+        self.assertEqual("HIGH", values["beep"])
+        self.assertEqual("TX DN Fixed", values["ams_tx_mode"])
+        self.assertEqual("Narrow", values["fm_bandwidth"])
+        self.assertEqual("YYYY/MMM/DD", values["date_fmt"])
+        self.assertEqual("12 hour", values["time_12hr"])
+        self.assertEqual("B", values["clock_type_b"])
+
+        settings = src.get_settings()
+        for setting in _iter_settings(settings):
+            if setting.get_name() == "aprs_ssid":
+                setting.value = ""
+        src.set_settings(settings)
+        packed = src.get_mmap().get_packed()
+        self.assertEqual(0xCA, packed[0x50E])
+        values = _setting_map(src.get_settings())
+        self.assertEqual("", values["aprs_ssid"])
 
     def test_settings_from_live_dumps(self):
         dump_dir = os.path.join(
@@ -505,7 +545,11 @@ class TestFTM300Clone(unittest.TestCase):
 
         extra = [
             ('Yaesu_FTM-300DR_20260906.img',
-             {'lcd_brightness': 'MAX', 'callsign': 'A', 'aprs_call': ''}),
+             {'lcd_brightness': 'MAX', 'callsign': 'A', 'aprs_call': '',
+              'aprs_ssid': '', 'aprs_modem': 'OFF', 'beep': 'LOW',
+              'ams_tx_mode': 'Auto', 'date_fmt': 'MMM/DD/YYYY',
+              'time_12hr': '24 hour', 'clock_type_b': 'A',
+              'fm_bandwidth': 'Wide'}),
             ('Yaesu_FTM-300DR_20260906_display-brightness=min.img',
              {'lcd_brightness': 'MIN'}),
             ('Yaesu_FTM-300DR_20260906_display-brightness=mid.img',
@@ -514,6 +558,36 @@ class TestFTM300Clone(unittest.TestCase):
              {'callsign': 'B'}),
             ('Yaesu_FTM-300DR_20260906_callsign-aprs=B.img',
              {'aprs_call': 'A'}),
+            ('Yaesu_FTM-300DR_20260911_aprs-callsign=AAAAAA-13.img',
+             {'aprs_call': 'AAAAAA', 'aprs_ssid': '13', 'aprs_modem': 'OFF'}),
+            ('Yaesu_FTM-300DR_20260911_aprs-modem=on.img',
+             {'aprs_modem': 'ON'}),
+            ('Yaesu_FTM-300DR_20260911_beep=high.img',
+             {'beep': 'HIGH'}),
+            ('Yaesu_FTM-300DR_20260911_beep=off.img',
+             {'beep': 'OFF'}),
+            ('Yaesu_FTM-300DR_20260911_beep=low.img',
+             {'beep': 'LOW'}),
+            ('Yaesu_FTM-300DR_20260911_AMS TX MODE=TX FM FIXED.img',
+             {'ams_tx_mode': 'TX FM Fixed'}),
+            ('Yaesu_FTM-300DR_20260911_AMS TX MODE=TX DN FIXED.img',
+             {'ams_tx_mode': 'TX DN Fixed'}),
+            ('Yaesu_FTM-300DR_20260911_date-format=mmm-dd-yyyy.img',
+             {'date_fmt': 'MMM/DD/YYYY', 'time_12hr': '24 hour'}),
+            ('Yaesu_FTM-300DR_20260911_date-format=yyyy-mmm-dd.img',
+             {'date_fmt': 'YYYY/MMM/DD', 'time_12hr': '24 hour'}),
+            ('Yaesu_FTM-300DR_20260911_date-format=dd-mmm-yyyy.img',
+             {'date_fmt': 'DD/MMM/YYYY', 'time_12hr': '24 hour'}),
+            ('Yaesu_FTM-300DR_20260911_date-format=yyyy-dd-mmm.img',
+             {'date_fmt': 'YYYY/DD/MMM', 'time_12hr': '24 hour'}),
+            ('Yaesu_FTM-300DR_20260911_time-format=12hr.img',
+             {'time_12hr': '12 hour'}),
+            ('Yaesu_FTM-300DR_20260911_clock-type=B.img',
+             {'clock_type_b': 'B'}),
+            ('Yaesu_FTM-300DR_20260911_fm bandwidth=narrow.img',
+             {'fm_bandwidth': 'Narrow'}),
+            ('Yaesu_FTM-300DR_20260911_fm bandwidth=wide.img',
+             {'fm_bandwidth': 'Wide'}),
         ]
         for name, expect in extra:
             path = os.path.join(dump_dir, name)

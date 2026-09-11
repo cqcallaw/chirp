@@ -248,12 +248,41 @@ MEM_FORMAT = YFREQ_FORMAT + """
 #seekto 0x0000;
 u8 ident[6];
 
+#seekto 0x0091;
+u8 unknown_91_hi:2,
+   fm_bandwidth:1,
+   unknown_91_lo:5;
+
+#seekto 0x009A;
+u8 clock_type_b:1,
+   unknown_9a:7;
+
 #seekto 0x00A1;
 u8 unit;
 
 #seekto 0x00A8;
 u8 tz_west:1,
    tz_mag:7;
+
+#seekto 0x00EB;
+u8 unknown_eb_hi:4,
+   beep_on:1,
+   unknown_eb_lo:3;
+
+#seekto 0x00EE;
+u8 ams_tx_mode;
+
+#seekto 0x00F9;
+u8 unknown_f9_hi:2,
+   unknown_f9_5:1,
+   time_12hr:1,
+   unknown_f9_3:1,
+   date_fmt:3;
+
+#seekto 0x00FA;
+u8 unknown_fa_hi:3,
+   beep_high:1,
+   unknown_fa_lo:4;
 
 #seekto 0x028F;
 u8 lcd_brightness;
@@ -263,6 +292,10 @@ u8 callsign[10];
 
 #seekto 0x0508;
 u8 aprs_call[6];
+u8 aprs_ssid;
+
+#seekto 0x0534;
+u8 aprs_modem;
 
 #seekto 0x0800;
 struct {
@@ -362,17 +395,66 @@ def timezone_label(half_hours):
 TIMEZONE_LABELS = [
     timezone_label(h) for h in range(TZ_HALF_MIN, TZ_HALF_MAX + 1)]
 
+# CONFIG 2 DATE&TIME FORMAT at 0x00F9: date in bits 2-0, 12-hour in bit 4.
+# Proven: MMM/DD/YYYY=2 (0x22), YYYY/MMM/DD=0 (0x20),
+# DD/MMM/YYYY=4 (0x24), YYYY/DD/MMM=1 (0x21).
+DATE_FORMAT_MAP = (
+    ("YYYY/MMM/DD", 0),
+    ("YYYY/DD/MMM", 1),
+    ("MMM/DD/YYYY", 2),
+    ("DD/MMM/YYYY", 4),
+)
+DATE_FORMAT_MEM_VALS = tuple(v for _, v in DATE_FORMAT_MAP)
+TIME_FORMAT_LABELS = ["24 hour", "12 hour"]
+# CONFIG 9 CLOCK TYPE at 0x009A bit 7. Proven A=0, B=1.
+CLOCK_TYPE_LABELS = ["A", "B"]
+
+FM_BANDWIDTH_LABELS = ["Wide", "Narrow"]
+
+# TX/RX DIGITAL AMS TX MODE at 0x00EE.
+# Proven: AUTO=0, TX FM FIXED=1, TX DN FIXED=2.
+AMS_TX_MODE_LABELS = ["Auto", "TX FM Fixed", "TX DN Fixed"]
+
+# CONFIG 8 BEEP: OFF / LOW / HIGH as two flags.
+# Proven: enable = 0x00EB bit3, HIGH = 0x00FA bit4. OFF leaves volume.
+BEEP_LABELS = ["OFF", "LOW", "HIGH"]
+
+
+def beep_from_fields(beep_on, beep_high):
+    if not int(beep_on):
+        return "OFF"
+    if int(beep_high):
+        return "HIGH"
+    return "LOW"
+
+
+def beep_to_fields(label):
+    if label == "OFF":
+        return 0, None
+    if label == "HIGH":
+        return 1, 1
+    return 1, 0
+
+
 # DISPLAY 4 LCD BRIGHTNESS at 0x028F. Proven MIN=3, MID=5, MAX=6.
 BRIGHTNESS_MAP = (("MIN", 3), ("MID", 5), ("MAX", 6))
 BRIGHTNESS_MEM_VALS = tuple(v for _, v in BRIGHTNESS_MAP)
 
 # F(SETUP) CALLSIGN: 10 chars at 0x02C8, 0xFF pad.
 # APRS 21 CALLSIGN: 6 chars at 0x0508, 0xCA pad (empty is all 0xCA).
+# SSID at 0x050E. Proven AAAAAA-13 -> 0x0D; empty pad 0xCA (not SSID 0).
+# APRS 4 MODEM at 0x0534. Proven OFF=0, ON=1.
 # Radio CALLSIGN allows A-Z, 0-9, hyphen, and slash.
 CALLSIGN_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/"
 APRS_CALL_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 CALLSIGN_PAD = 0xFF
 APRS_CALL_PAD = 0xCA
+APRS_SSID_MAX = 15
+# Empty SSID is pad 0xCA, distinct from SSID 0.
+APRS_SSID_MAP = (("", APRS_CALL_PAD),) + tuple(
+    (str(i), i) for i in range(APRS_SSID_MAX + 1))
+APRS_SSID_MEM_VALS = tuple(v for _, v in APRS_SSID_MAP)
+APRS_MODEM_LABELS = ["OFF", "ON"]
 
 
 def _decode_padded(raw, pad):
@@ -550,6 +632,61 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
             "timezone", "Time Zone",
             RadioSettingValueList(TIMEZONE_LABELS, current_index=idx)))
 
+        date_time_format = RadioSettingGroup("date_time_format",
+                                             "Date & Time Format")
+        config.append(date_time_format)
+        date_fmt = int(self._memobj.date_fmt)
+        if date_fmt not in DATE_FORMAT_MEM_VALS:
+            date_fmt = 2
+        date_time_format.append(MemSetting(
+            "date_fmt", "Date Format",
+            RadioSettingValueMap(DATE_FORMAT_MAP, mem_val=date_fmt)))
+        time_12hr = int(self._memobj.time_12hr)
+        if time_12hr not in (0, 1):
+            time_12hr = 0
+        date_time_format.append(MemSetting(
+            "time_12hr", "Time Format",
+            RadioSettingValueList(
+                TIME_FORMAT_LABELS, current_index=time_12hr)))
+
+        clock = int(self._memobj.clock_type_b)
+        if clock not in (0, 1):
+            clock = 0
+        config.append(MemSetting(
+            "clock_type_b", "Clock Type",
+            RadioSettingValueList(
+                CLOCK_TYPE_LABELS, current_index=clock)))
+
+        beep = beep_from_fields(
+            self._memobj.beep_on, self._memobj.beep_high)
+        config.append(RadioSetting(
+            "beep", "Beep",
+            RadioSettingValueList(
+                BEEP_LABELS, current_index=BEEP_LABELS.index(beep))))
+
+        txrx = RadioSettingGroup("txrx", "TX/RX")
+        top.append(txrx)
+
+        mode = RadioSettingGroup("mode", "Mode")
+        txrx.append(mode)
+        fm_bandwidth = int(self._memobj.fm_bandwidth)
+        if fm_bandwidth not in (0, 1):
+            fm_bandwidth = 0
+        mode.append(MemSetting(
+            "fm_bandwidth", "FM Bandwidth",
+            RadioSettingValueList(
+                FM_BANDWIDTH_LABELS, current_index=fm_bandwidth)))
+
+        digital = RadioSettingGroup("digital", "Digital")
+        txrx.append(digital)
+        ams = int(self._memobj.ams_tx_mode)
+        if ams not in (0, 1, 2):
+            ams = 0
+        digital.append(MemSetting(
+            "ams_tx_mode", "AMS TX Mode",
+            RadioSettingValueList(
+                AMS_TX_MODE_LABELS, current_index=ams)))
+
         display = RadioSettingGroup("display", "Display")
         top.append(display)
         bright = int(self._memobj.lcd_brightness)
@@ -574,6 +711,19 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
             RadioSettingValueString(
                 0, 6, self._decode_aprs_call(),
                 autopad=False, charset=APRS_CALL_CHARSET)))
+        sid = int(self._memobj.aprs_ssid)
+        if sid not in APRS_SSID_MEM_VALS:
+            sid = APRS_CALL_PAD
+        aprs.append(MemSetting(
+            "aprs_ssid", "APRS SSID",
+            RadioSettingValueMap(APRS_SSID_MAP, mem_val=sid)))
+        modem = int(self._memobj.aprs_modem)
+        if modem not in (0, 1):
+            modem = 0
+        aprs.append(MemSetting(
+            "aprs_modem", "APRS Modem",
+            RadioSettingValueList(
+                APRS_MODEM_LABELS, current_index=modem)))
         return top
 
     def set_settings(self, settings):
@@ -586,6 +736,11 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
                 west, mag = timezone_to_fields(half)
                 self._memobj.tz_west = west
                 self._memobj.tz_mag = mag
+            elif name == "beep":
+                on, high = beep_to_fields(value)
+                self._memobj.beep_on = on
+                if high is not None:
+                    self._memobj.beep_high = high
             elif name == "callsign":
                 self._encode_callsign(value)
             elif name == "aprs_call":
