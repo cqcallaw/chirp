@@ -36,6 +36,7 @@ from chirp.settings import RadioSettings
 from chirp.settings import RadioSettingValueBoolean
 from chirp.settings import RadioSettingValueInteger
 from chirp.settings import RadioSettingValueList
+from chirp.settings import RadioSettingValueMap
 from chirp.settings import RadioSettingValueString
 
 LOG = logging.getLogger(__name__)
@@ -362,9 +363,8 @@ TIMEZONE_LABELS = [
     timezone_label(h) for h in range(TZ_HALF_MIN, TZ_HALF_MAX + 1)]
 
 # DISPLAY 4 LCD BRIGHTNESS at 0x028F. Proven MIN=3, MID=5, MAX=6.
-BRIGHTNESS_FROM_RADIO = {3: "MIN", 5: "MID", 6: "MAX"}
-BRIGHTNESS_TO_RADIO = {v: k for k, v in BRIGHTNESS_FROM_RADIO.items()}
-BRIGHTNESS_LABELS = ["MIN", "MID", "MAX"]
+BRIGHTNESS_MAP = (("MIN", 3), ("MID", 5), ("MAX", 6))
+BRIGHTNESS_MEM_VALS = tuple(v for _, v in BRIGHTNESS_MAP)
 
 # F(SETUP) CALLSIGN: 10 chars at 0x02C8, 0xFF pad.
 # APRS 21 CALLSIGN: 6 chars at 0x0508, 0xCA pad (empty is all 0xCA).
@@ -534,7 +534,7 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
         unit = int(self._memobj.unit)
         if unit not in (0, 1):
             unit = 1
-        config.append(RadioSetting(
+        config.append(MemSetting(
             "unit", "Display Units",
             RadioSettingValueList(UNIT_LABELS, current_index=unit)))
 
@@ -545,19 +545,19 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
             idx = TIMEZONE_LABELS.index(label)
         except ValueError:
             idx = TIMEZONE_LABELS.index(timezone_label(0))
+        # Two bitfields; applied as leftover in set_settings().
         config.append(RadioSetting(
             "timezone", "Time Zone",
             RadioSettingValueList(TIMEZONE_LABELS, current_index=idx)))
 
         display = RadioSettingGroup("display", "Display")
         top.append(display)
-        bright = BRIGHTNESS_FROM_RADIO.get(
-            int(self._memobj.lcd_brightness), "MID")
-        display.append(RadioSetting(
+        bright = int(self._memobj.lcd_brightness)
+        if bright not in BRIGHTNESS_MEM_VALS:
+            bright = 5
+        display.append(MemSetting(
             "lcd_brightness", "LCD Brightness",
-            RadioSettingValueList(
-                BRIGHTNESS_LABELS,
-                current_index=BRIGHTNESS_LABELS.index(bright))))
+            RadioSettingValueMap(BRIGHTNESS_MAP, mem_val=bright)))
 
         ident = RadioSettingGroup("callsign", "Callsign")
         top.append(ident)
@@ -577,21 +577,15 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
         return top
 
     def set_settings(self, settings):
-        for element in settings:
-            if not isinstance(element, RadioSetting):
-                self.set_settings(element)
-                continue
+        leftover = settings.apply_to(self._memobj)
+        for element in leftover:
             name = element.get_name()
             value = str(element.value)
-            if name == "unit":
-                self._memobj.unit = UNIT_LABELS.index(value)
-            elif name == "timezone":
+            if name == "timezone":
                 half = TIMEZONE_LABELS.index(value) + TZ_HALF_MIN
                 west, mag = timezone_to_fields(half)
                 self._memobj.tz_west = west
                 self._memobj.tz_mag = mag
-            elif name == "lcd_brightness":
-                self._memobj.lcd_brightness = BRIGHTNESS_TO_RADIO[value]
             elif name == "callsign":
                 self._encode_callsign(value)
             elif name == "aprs_call":
