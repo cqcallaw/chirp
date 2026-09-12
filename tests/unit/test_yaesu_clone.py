@@ -473,7 +473,7 @@ class TestFTM300Clone(unittest.TestCase):
                 setting.value = "HIGH"
             elif name == "ams_tx_mode":
                 setting.value = "TX DN Fixed"
-            elif name == "fm_bandwidth":
+            elif name == "fm_bandwidth_a":
                 setting.value = "Narrow"
             elif name == "date_fmt":
                 setting.value = "YYYY/MMM/DD"
@@ -481,13 +481,37 @@ class TestFTM300Clone(unittest.TestCase):
                 setting.value = "12 hour"
             elif name == "clock_type_b":
                 setting.value = "B"
+            elif name == "rx_mode_a":
+                setting.value = "AM"
+            elif name == "rx_mode_b":
+                setting.value = "FM"
+            elif name == "standby_beep_off":
+                setting.value = "OFF"
+            elif name == "digital_vw":
+                setting.value = "ON"
+            elif name == "location_service":
+                setting.value = "OFF"
+            elif name == "digital_popup":
+                setting.value = "Continue"
+            elif name == "mic_gain":
+                setting.value = "Max"
         src.set_settings(settings)
         packed = src.get_mmap().get_packed()
-        self.assertEqual(0x88, packed[0xEB])
+        self.assertEqual(0x08, packed[0xEB])
         self.assertEqual(0x10, packed[0xFA])
         self.assertEqual(0x02, packed[0xEE])
-        self.assertEqual(0x20, packed[0x91] & 0x20)
+        self.assertEqual(0x20, packed[0x81] & 0x20)
+        self.assertEqual(0x00, packed[0x91] & 0x20)
         self.assertEqual(0x80, packed[0x9A])
+        self.assertEqual(0x00, packed[0xE3] & 0x10)
+        self.assertEqual(0x02, packed[0xE3] & 0x02)
+        self.assertEqual(0x10, packed[0x81] & 0x10)
+        self.assertEqual(0x00, packed[0xF3] & 0x10)
+        self.assertEqual(0x02, packed[0xF3] & 0x02)
+        self.assertEqual(0x00, packed[0x91] & 0x10)
+        self.assertEqual(0x12, packed[0xE8])
+        self.assertEqual(0xFF, packed[0x2DB])
+        self.assertEqual(0x04, packed[0x2DD])
         self.assertEqual(0x10, packed[0xF9] & 0x10)
         self.assertEqual(0x00, packed[0xF9] & 0x07)
         self.assertEqual(0x03, packed[0x28F])
@@ -504,10 +528,18 @@ class TestFTM300Clone(unittest.TestCase):
         self.assertEqual("ON", values["aprs_modem"])
         self.assertEqual("HIGH", values["beep"])
         self.assertEqual("TX DN Fixed", values["ams_tx_mode"])
-        self.assertEqual("Narrow", values["fm_bandwidth"])
+        self.assertEqual("Narrow", values["fm_bandwidth_a"])
+        self.assertEqual("Wide", values["fm_bandwidth_b"])
         self.assertEqual("YYYY/MMM/DD", values["date_fmt"])
         self.assertEqual("12 hour", values["time_12hr"])
         self.assertEqual("B", values["clock_type_b"])
+        self.assertEqual("AM", values["rx_mode_a"])
+        self.assertEqual("FM", values["rx_mode_b"])
+        self.assertEqual("OFF", values["standby_beep_off"])
+        self.assertEqual("ON", values["digital_vw"])
+        self.assertEqual("OFF", values["location_service"])
+        self.assertEqual("Continue", values["digital_popup"])
+        self.assertEqual("Max", values["mic_gain"])
 
         settings = src.get_settings()
         for setting in _iter_settings(settings):
@@ -549,7 +581,11 @@ class TestFTM300Clone(unittest.TestCase):
               'aprs_ssid': '', 'aprs_modem': 'OFF', 'beep': 'LOW',
               'ams_tx_mode': 'Auto', 'date_fmt': 'MMM/DD/YYYY',
               'time_12hr': '24 hour', 'clock_type_b': 'A',
-              'fm_bandwidth': 'Wide'}),
+              'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Wide',
+              'rx_mode_a': 'Auto', 'rx_mode_b': 'Auto',
+              'standby_beep_off': 'ON', 'digital_vw': 'OFF',
+              'location_service': 'ON', 'digital_popup': '10 sec',
+              'mic_gain': 'Normal'}),
             ('Yaesu_FTM-300DR_20260906_display-brightness=min.img',
              {'lcd_brightness': 'MIN'}),
             ('Yaesu_FTM-300DR_20260906_display-brightness=mid.img',
@@ -585,9 +621,41 @@ class TestFTM300Clone(unittest.TestCase):
             ('Yaesu_FTM-300DR_20260911_clock-type=B.img',
              {'clock_type_b': 'B'}),
             ('Yaesu_FTM-300DR_20260911_fm bandwidth=narrow.img',
-             {'fm_bandwidth': 'Narrow'}),
+             {'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Narrow'}),
             ('Yaesu_FTM-300DR_20260911_fm bandwidth=wide.img',
-             {'fm_bandwidth': 'Wide'}),
+             {'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Wide'}),
+            ('Yaesu_FTM-300DR_20260912_standby-beep=off.img',
+             {'standby_beep_off': 'OFF'}),
+            ('Yaesu_FTM-300DR_20260912_digital-vw=on.img',
+             {'digital_vw': 'ON'}),
+            ('Yaesu_FTM-300DR_20260912_location-service=off.img',
+             {'location_service': 'OFF'}),
+            ('Yaesu_FTM-300DR_20260912_digital-popup=off.img',
+             {'digital_popup': 'OFF'}),
+            ('Yaesu_FTM-300DR_20260912_digital-popup=2sec.img',
+             {'digital_popup': '2 sec'}),
+            ('Yaesu_FTM-300DR_20260912_digital-popup=continue.img',
+             {'digital_popup': 'Continue'}),
+            ('Yaesu_FTM-300DR_20260912_a-band-fm-bw=narrow.img',
+             {'fm_bandwidth_a': 'Narrow', 'fm_bandwidth_b': 'Wide'}),
+            ('Yaesu_FTM-300DR_20260912_b-band-fm-bw=narrow.img',
+             {'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Narrow'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2.img',
+             {'rx_mode_a': 'Auto', 'rx_mode_b': 'Auto',
+              'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Wide',
+              'mic_gain': 'Normal'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2_rx-mode=fm.img',
+             {'rx_mode_a': 'FM', 'rx_mode_b': 'Auto',
+              'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Wide'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2_rx-mode=am.img',
+             {'rx_mode_a': 'AM', 'rx_mode_b': 'Auto',
+              'fm_bandwidth_a': 'Wide', 'fm_bandwidth_b': 'Wide'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2_mic-gain=low.img',
+             {'mic_gain': 'Low'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2_mic-gain=high.img',
+             {'mic_gain': 'High'}),
+            ('Yaesu_FTM-300DR_20260912_baseline2_mic-gain=max.img',
+             {'mic_gain': 'Max'}),
         ]
         for name, expect in extra:
             path = os.path.join(dump_dir, name)

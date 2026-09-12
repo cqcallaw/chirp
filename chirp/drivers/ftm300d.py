@@ -248,10 +248,17 @@ MEM_FORMAT = YFREQ_FORMAT + """
 #seekto 0x0000;
 u8 ident[6];
 
+#seekto 0x0081;
+u8 unknown_81_hi:2,
+   fm_bandwidth_a:1,
+   rx_am_a:1,
+   unknown_81_lo:4;
+
 #seekto 0x0091;
 u8 unknown_91_hi:2,
-   fm_bandwidth:1,
-   unknown_91_lo:5;
+   fm_bandwidth_b:1,
+   rx_am_b:1,
+   unknown_91_lo:4;
 
 #seekto 0x009A;
 u8 clock_type_b:1,
@@ -264,13 +271,35 @@ u8 unit;
 u8 tz_west:1,
    tz_mag:7;
 
+#seekto 0x00E3;
+u8 unknown_e3_hi:3,
+   rx_auto_a:1,
+   unknown_e3_mid:2,
+   rx_auto_menu_a:1,
+   unknown_e3_lo:1;
+
+#seekto 0x00E8;
+u8 unknown_e8_hi:3,
+   standby_beep_off:1,
+   unknown_e8_mid:2,
+   digital_vw:1,
+   unknown_e8_lo:1;
+
 #seekto 0x00EB;
-u8 unknown_eb_hi:4,
+u8 location_service:1,
+   unknown_eb_6:3,
    beep_on:1,
    unknown_eb_lo:3;
 
 #seekto 0x00EE;
 u8 ams_tx_mode;
+
+#seekto 0x00F3;
+u8 unknown_f3_hi:3,
+   rx_auto_b:1,
+   unknown_f3_mid:2,
+   rx_auto_menu_b:1,
+   unknown_f3_lo:1;
 
 #seekto 0x00F9;
 u8 unknown_f9_hi:2,
@@ -286,6 +315,12 @@ u8 unknown_fa_hi:3,
 
 #seekto 0x028F;
 u8 lcd_brightness;
+
+#seekto 0x02DB;
+u8 digital_popup;
+
+#seekto 0x02DD;
+u8 mic_gain;
 
 #seekto 0x02C8;
 u8 callsign[10];
@@ -410,8 +445,40 @@ TIME_FORMAT_LABELS = ["24 hour", "12 hour"]
 CLOCK_TYPE_LABELS = ["A", "B"]
 
 FM_BANDWIDTH_LABELS = ["Wide", "Narrow"]
+# MODE is per band (A=0x0081/0x00E3, B=0x0091/0x00F3). DIGITAL is global.
+# FM bandwidth = bit5 of 81/91. RX MODE AUTO = bit4 of E3/F3; AM = bit4
+# of 81/91; FM = both 0. E3/F3 bit1 is "Auto listed in the radio menu"
+# (writes set it).
+RX_MODE_LABELS = ["Auto", "FM", "AM"]
+# TX/RX DIGITAL 4 STANDBY BEEP at 0x00E8 bit4 (1=OFF).
+# DIGITAL VW at 0x00E8 bit1. LOCATION SERVICE at 0x00EB bit7 (1=ON).
+STANDBY_BEEP_LABELS = ["ON", "OFF"]
+ON_OFF_LABELS = ["OFF", "ON"]
+# DIGITAL POPUP at 0x02DB. Proven OFF=0 .. 60sec=8, Continue=0xFF.
+# Default 10sec=5.
+DIGITAL_POPUP_MAP = (
+    ("OFF", 0),
+    ("2 sec", 1),
+    ("4 sec", 2),
+    ("6 sec", 3),
+    ("8 sec", 4),
+    ("10 sec", 5),
+    ("20 sec", 6),
+    ("30 sec", 7),
+    ("60 sec", 8),
+    ("Continue", 0xFF),
+)
+DIGITAL_POPUP_MEM_VALS = tuple(v for _, v in DIGITAL_POPUP_MAP)
+# TX/RX AUDIO MIC GAIN at 0x02DD. Proven Low=1 .. Max=4. Default Normal=2.
+MIC_GAIN_MAP = (
+    ("Low", 1),
+    ("Normal", 2),
+    ("High", 3),
+    ("Max", 4),
+)
+MIC_GAIN_MEM_VALS = tuple(v for _, v in MIC_GAIN_MAP)
 
-# TX/RX DIGITAL AMS TX MODE at 0x00EE.
+# TX/RX DIGITAL AMS TX MODE at 0x00EE (global).
 # Proven: AUTO=0, TX FM FIXED=1, TX DN FIXED=2.
 AMS_TX_MODE_LABELS = ["Auto", "TX FM Fixed", "TX DN Fixed"]
 
@@ -434,6 +501,22 @@ def beep_to_fields(label):
     if label == "HIGH":
         return 1, 1
     return 1, 0
+
+
+def rx_mode_from_fields(rx_auto, rx_am):
+    if int(rx_auto):
+        return "Auto"
+    if int(rx_am):
+        return "AM"
+    return "FM"
+
+
+def rx_mode_to_fields(label):
+    if label == "Auto":
+        return 1, 0
+    if label == "AM":
+        return 0, 1
+    return 0, 0
 
 
 # DISPLAY 4 LCD BRIGHTNESS at 0x028F. Proven MIN=3, MID=5, MAX=6.
@@ -571,6 +654,24 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
             "press the DIAL knob.\n")
         return rp
 
+    def _append_mode(self, parent, suffix, title):
+        group = RadioSettingGroup("band_%s" % suffix, title)
+        parent.append(group)
+        bw = int(getattr(self._memobj, "fm_bandwidth_%s" % suffix))
+        if bw not in (0, 1):
+            bw = 0
+        group.append(MemSetting(
+            "fm_bandwidth_%s" % suffix, "FM Bandwidth",
+            RadioSettingValueList(
+                FM_BANDWIDTH_LABELS, current_index=bw)))
+        rx = rx_mode_from_fields(
+            getattr(self._memobj, "rx_auto_%s" % suffix),
+            getattr(self._memobj, "rx_am_%s" % suffix))
+        group.append(RadioSetting(
+            "rx_mode_%s" % suffix, "RX Mode",
+            RadioSettingValueList(
+                RX_MODE_LABELS, current_index=RX_MODE_LABELS.index(rx))))
+
     def get_features(self):
         rf = chirp_common.RadioFeatures()
         rf.has_bank = False
@@ -668,14 +769,9 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
         top.append(txrx)
 
         mode = RadioSettingGroup("mode", "Mode")
+        self._append_mode(mode, "a", "A Band")
+        self._append_mode(mode, "b", "B Band")
         txrx.append(mode)
-        fm_bandwidth = int(self._memobj.fm_bandwidth)
-        if fm_bandwidth not in (0, 1):
-            fm_bandwidth = 0
-        mode.append(MemSetting(
-            "fm_bandwidth", "FM Bandwidth",
-            RadioSettingValueList(
-                FM_BANDWIDTH_LABELS, current_index=fm_bandwidth)))
 
         digital = RadioSettingGroup("digital", "Digital")
         txrx.append(digital)
@@ -686,6 +782,40 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
             "ams_tx_mode", "AMS TX Mode",
             RadioSettingValueList(
                 AMS_TX_MODE_LABELS, current_index=ams)))
+        off = int(self._memobj.standby_beep_off)
+        if off not in (0, 1):
+            off = 0
+        digital.append(MemSetting(
+            "standby_beep_off", "Standby Beep",
+            RadioSettingValueList(
+                STANDBY_BEEP_LABELS, current_index=off)))
+        vw = int(self._memobj.digital_vw)
+        if vw not in (0, 1):
+            vw = 0
+        digital.append(MemSetting(
+            "digital_vw", "Digital VW",
+            RadioSettingValueList(ON_OFF_LABELS, current_index=vw)))
+        loc = int(self._memobj.location_service)
+        if loc not in (0, 1):
+            loc = 1
+        digital.append(MemSetting(
+            "location_service", "Location Service",
+            RadioSettingValueList(ON_OFF_LABELS, current_index=loc)))
+        popup = int(self._memobj.digital_popup)
+        if popup not in DIGITAL_POPUP_MEM_VALS:
+            popup = 5
+        digital.append(MemSetting(
+            "digital_popup", "Digital Popup",
+            RadioSettingValueMap(DIGITAL_POPUP_MAP, mem_val=popup)))
+
+        audio = RadioSettingGroup("audio", "Audio")
+        txrx.append(audio)
+        mic = int(self._memobj.mic_gain)
+        if mic not in MIC_GAIN_MEM_VALS:
+            mic = 2
+        audio.append(MemSetting(
+            "mic_gain", "Mic Gain",
+            RadioSettingValueMap(MIC_GAIN_MAP, mem_val=mic)))
 
         display = RadioSettingGroup("display", "Display")
         top.append(display)
@@ -741,6 +871,16 @@ class FTM300Radio(yaesu_clone.YaesuCloneModeRadio,
                 self._memobj.beep_on = on
                 if high is not None:
                     self._memobj.beep_high = high
+            elif name == "rx_mode_a":
+                auto, am = rx_mode_to_fields(value)
+                self._memobj.rx_auto_a = auto
+                self._memobj.rx_am_a = am
+                self._memobj.rx_auto_menu_a = 1
+            elif name == "rx_mode_b":
+                auto, am = rx_mode_to_fields(value)
+                self._memobj.rx_auto_b = auto
+                self._memobj.rx_am_b = am
+                self._memobj.rx_auto_menu_b = 1
             elif name == "callsign":
                 self._encode_callsign(value)
             elif name == "aprs_call":
